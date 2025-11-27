@@ -1,0 +1,8 @@
+{
+  "name": "Sola Voice Assistant",
+  "description": "A Chennai-regional Tamil voice assistant for booking appointments using Gemini Live API and Maps Grounding.",
+  "requestFramePermissions": [
+    "microphone",
+    "geolocation"
+  ]
+}
