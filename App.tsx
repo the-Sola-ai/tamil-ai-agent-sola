@@ -15,12 +15,20 @@ import DynamicPanel from './components/DynamicPanel';
 import { ViewMode, Place, Appointment, Message, SessionMode, BookingDetails } from './types';
 
 const App: React.FC = () => {
+  // Default places (used as the single source of truth for the demo)
+  const DEFAULT_PLACES: Place[] = [
+    { id: '1', name: 'Chennai Classic Saloon', address: '12, Anna Salai, Chennai', phoneNumber: '+91 98765 43210', rating: 4.5, userRatingCount: 120, location: { lat: 13.0827, lng: 80.2707 } },
+    { id: '2', name: 'Velachery Spa & Saloon', address: '45, Bypass Rd, Velachery', phoneNumber: '044 2244 6688', rating: 4.2, userRatingCount: 85, location: { lat: 12.9815, lng: 80.2180 } },
+    { id: '3', name: 'Style Cuts', address: '8, T Nagar, Chennai', phoneNumber: '+91 91234 56789', rating: 4.8, userRatingCount: 340, location: { lat: 13.0418, lng: 80.2341 } },
+    { id: '4', name: 'Green Trends', address: 'Mylapore, Chennai', phoneNumber: '044 2468 1357', rating: 4.3, userRatingCount: 210, location: { lat: 13.0368, lng: 80.2676 } },
+    { id: '5', name: 'Naturals', address: 'Adyar, Chennai', phoneNumber: '+91 99887 76655', rating: 4.6, userRatingCount: 190, location: { lat: 13.0012, lng: 80.2565 } },
+  ];
   // State
   const [sessionMode, setSessionMode] = useState<SessionMode>(SessionMode.USER);
   const [isActive, setIsActive] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>(ViewMode.MAP);
   const [volumeLevel, setVolumeLevel] = useState(0);
-  const [places, setPlaces] = useState<Place[]>([]);
+  const [places, setPlaces] = useState<Place[]>(DEFAULT_PLACES);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | undefined>(undefined);
   const [messages, setMessages] = useState<Message[]>([]);
   
@@ -175,6 +183,8 @@ const App: React.FC = () => {
       console.error("Failed to connect:", err);
       addSystemMessage('Failed to connect live API: ' + String(err));
       try { alert("Could not access microphone or connect to Gemini: " + String(err)); } catch(e) { console.error('alert failed', e); }
+      // allow future dialing attempts
+      dialingTriggeredRef.current = false;
     }
   };
 
@@ -245,13 +255,30 @@ const App: React.FC = () => {
                 const pid = (fc.args as any).providerId;
                 setSelectedPlaceId(pid);
                 const place = places.find(p => p.id === pid);
-                addSystemMessage(`Selected ${place?.name}. Ask for date/time to proceed.`);
-                result = { selected: place?.name, phoneNumber: place?.phoneNumber };
+              console.log('selectProvider: providerId=', pid, 'places.length=', places.length);
+              console.log('selectProvider: found place =', place);
+              addSystemMessage(`Selected ${place?.name}. Ask for date/time to proceed.`);
+              result = { selected: place?.name, phoneNumber: place?.phoneNumber };
             }
             else if (fc.name === 'initiateCall') {
+              console.log('initiateCall: current places length=', places.length, 'places=', places.map(p => p.id));
                 const { placeId, service, date, time } = fc.args as any;
-                const place = places.find(p => p.id === placeId);
-                
+                // Only use the app's default places array. Do not attempt to interpret
+                // or use Google Maps place IDs returned by the model.
+                let place = places.find(p => p.id === placeId);
+
+                if (!place) {
+                  if (places.length > 0) {
+                    // If the provided id doesn't match any default place (e.g., a Google Maps id),
+                    // ignore it and fall back to the first default place.
+                    console.warn('initiateCall: provided placeId not found in default places, falling back to first default place. Ignoring external/Google Maps IDs. providedId=', placeId);
+                    place = places[0];
+                  } else {
+                    // No default places available — return an explicit error so flow can handle it.
+                    console.warn('initiateCall: no default places available to fallback to');
+                  }
+                }
+
                 if (place) {
                   const details: BookingDetails = {
                     placeId,
@@ -262,19 +289,13 @@ const App: React.FC = () => {
                     status: 'negotiating'
                   };
                   setBookingDetails(details);
-                  // Update ref immediately for the transition
-                  bookingDetailsRef.current = details; 
+                  bookingDetailsRef.current = details;
                   console.log('initiateCall: bookingDetails set on state and ref:', details);
-                  
-                  addSystemMessage("Dialing receptionist...");
+
+                  addSystemMessage('Dialing receptionist...');
                   console.log('initiateCall: added system message and will transition to receptionist');
-                  
-                  // TRANSITION: Disconnect User, Start Receptionist
-                  // Return success to User model so it wraps up politely
+
                   result = { status: 'switching_session' };
-                  
-                  // Artificial delay to simulate "Dialing"
-                  // Using a standalone function reference to avoid stale closures in setTimeout
                   transitionToReceptionist(details);
                 } else {
                   result = { error: 'Place not found' };
@@ -324,15 +345,24 @@ const App: React.FC = () => {
         }
 
         // Send Tool Response
-        sessionRef.current?.then(session => {
+        try {
+          sessionRef.current?.then(session => {
+            console.log('sending tool response for', fc.name, 'id=', fc.id, 'result=', result, 'session=', session);
             session.sendToolResponse({
-                functionResponses: {
-                    id: fc.id,
-                    name: fc.name,
-                    response: { result }
-                }
+              functionResponses: {
+                id: fc.id,
+                name: fc.name,
+                response: { result }
+              }
             });
-        });
+          }).catch((err:any) => {
+            console.error('Error resolving sessionRef when sending tool response:', err);
+            addSystemMessage('Error sending tool response: ' + String(err));
+          });
+        } catch (err) {
+          console.error('Exception sending tool response:', err);
+          addSystemMessage('Exception sending tool response: ' + String(err));
+        }
       }
     }
   };
@@ -341,6 +371,12 @@ const App: React.FC = () => {
   // We use references to class-level methods or stable functions
     const transitionToReceptionist = (details?: BookingDetails) => {
        console.log('transitionToReceptionist: scheduled in 3s with details =', details);
+       // If caller passed details, ensure state/ref are set immediately so connect path has them.
+       if (details) {
+         setBookingDetails(details);
+         bookingDetailsRef.current = details;
+         addSystemMessage('Preparing to call: ' + details.placeName);
+       }
        // mark that dialing was triggered (prevents duplicate triggers)
        dialingTriggeredRef.current = true;
        setTimeout(() => {
@@ -350,6 +386,8 @@ const App: React.FC = () => {
           } catch (e) {
             console.error('transitionToReceptionist: error calling handleSessionTransition', e);
             addSystemMessage('Error transitioning to receptionist: ' + String(e));
+            // allow retry
+            dialingTriggeredRef.current = false;
           }
        }, 3000); // 3 seconds dialing time
     };
@@ -396,7 +434,7 @@ const App: React.FC = () => {
   };
 
   const addSystemMessage = (text: string) => {
-    setMessages(prev => [...prev, { id: Date.now().toString(), role: 'system', text, timestamp: new Date() }]);
+    setMessages(prev => [...prev, { id: Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9), role: 'system', text, timestamp: new Date() }]);
   };
 
   const handleToggle = () => {
