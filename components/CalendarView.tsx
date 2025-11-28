@@ -1,11 +1,23 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Appointment } from '../types';
 
 interface CalendarViewProps {
   appointment: Appointment;
+  onAddToCalendar?: () => void;
 }
 
-const CalendarView: React.FC<CalendarViewProps> = ({ appointment }) => {
+const CalendarView: React.FC<CalendarViewProps> = ({ appointment, onAddToCalendar }) => {
+  const [isAdding, setIsAdding] = useState(false);
+
+  const handleAddToCalendar = async () => {
+    if (onAddToCalendar) {
+      setIsAdding(true);
+      onAddToCalendar();
+      // Reset after 2 seconds
+      setTimeout(() => setIsAdding(false), 2000);
+    }
+  };
+
   return (
     <div className="h-full w-full bg-white flex flex-col p-8 items-center justify-center">
       <div className="bg-green-50 p-8 rounded-2xl border-2 border-green-100 shadow-sm max-w-md w-full text-center">
@@ -18,7 +30,7 @@ const CalendarView: React.FC<CalendarViewProps> = ({ appointment }) => {
         <h2 className="text-2xl font-bold text-gray-800 mb-2">Booking Confirmed!</h2>
         <p className="text-gray-500 mb-6">Your appointment has been added to your calendar.</p>
         
-        <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100 text-left">
+        <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100 text-left mb-6">
            <div className="flex items-start mb-4">
              <div className="bg-blue-100 p-2 rounded-lg mr-3">
                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -58,6 +70,19 @@ const CalendarView: React.FC<CalendarViewProps> = ({ appointment }) => {
              </div>
            </div>
         </div>
+
+        {/* Manual "Add to Calendar" button for testing */}
+        <button
+          onClick={handleAddToCalendar}
+          disabled={isAdding}
+          className={`w-full py-3 px-4 rounded-lg font-semibold transition-all ${
+            isAdding
+              ? 'bg-gray-400 text-white cursor-not-allowed'
+              : 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95'
+          }`}
+        >
+          {isAdding ? '🔄 Adding to Google Calendar...' : '📅 Add to Google Calendar'}
+        </button>
       </div>
     </div>
   );

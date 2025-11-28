@@ -13,6 +13,7 @@ interface DynamicPanelProps {
   isCallingReceptionist: boolean;
   bookingDetails?: BookingDetails;
   volumeLevel: number; // For visualizer
+  onAddToCalendar?: () => void; // Callback to manually trigger calendar sync
 }
 
 const DynamicPanel: React.FC<DynamicPanelProps> = ({ 
@@ -23,7 +24,8 @@ const DynamicPanel: React.FC<DynamicPanelProps> = ({
   appointment,
   isCallingReceptionist,
   bookingDetails,
-  volumeLevel
+  volumeLevel,
+  onAddToCalendar
 }) => {
   
   // Logic to determine if we are in the "Dialing" transition state
@@ -163,7 +165,7 @@ const DynamicPanel: React.FC<DynamicPanelProps> = ({
 
   // 3. CALENDAR VIEW (Booking Success)
   if (mode === ViewMode.CALENDAR && appointment) {
-    return <CalendarView appointment={appointment} />;
+    return <CalendarView appointment={appointment} onAddToCalendar={onAddToCalendar} />;
   }
 
   // 4. MAP VIEW (Default)

@@ -12,6 +12,7 @@ import {
 } from './services/geminiService';
 import VoiceControls from './components/VoiceControls';
 import DynamicPanel from './components/DynamicPanel';
+import { addToGoogleCalendar } from './services/calendarClient';
 import { ViewMode, Place, Appointment, Message, SessionMode, BookingDetails } from './types';
 
 const App: React.FC = () => {
@@ -263,15 +264,17 @@ const App: React.FC = () => {
             else if (fc.name === 'initiateCall') {
               console.log('initiateCall: current places length=', places.length, 'places=', places.map(p => p.id));
                 const { placeId, service, date, time } = fc.args as any;
-                // Only use the app's default places array. Do not attempt to interpret
-                // or use Google Maps place IDs returned by the model.
-                let place = places.find(p => p.id === placeId);
+                // Prioritize selectedPlaceId (user's chosen salon) over provided placeId
+                const targetPlaceId = selectedPlaceId || placeId;
+                console.log('initiateCall: selectedPlaceId=', selectedPlaceId, 'providedPlaceId=', placeId, 'using targetPlaceId=', targetPlaceId);
+                
+                let place = places.find(p => p.id === targetPlaceId);
 
                 if (!place) {
                   if (places.length > 0) {
                     // If the provided id doesn't match any default place (e.g., a Google Maps id),
                     // ignore it and fall back to the first default place.
-                    console.warn('initiateCall: provided placeId not found in default places, falling back to first default place. Ignoring external/Google Maps IDs. providedId=', placeId);
+                    console.warn('initiateCall: target placeId not found in default places, falling back to first default place. targetPlaceId=', targetPlaceId);
                     place = places[0];
                   } else {
                     // No default places available — return an explicit error so flow can handle it.
@@ -281,7 +284,7 @@ const App: React.FC = () => {
 
                 if (place) {
                   const details: BookingDetails = {
-                    placeId,
+                    placeId: place.id,
                     placeName: place.name,
                     service,
                     date,
@@ -322,6 +325,15 @@ const App: React.FC = () => {
                     setAppointment(newAppt);
                     setLastCallStatus("Success: Booking confirmed.");
                     setViewMode(ViewMode.CALENDAR);
+                    
+                    // Add to Google Calendar (async)
+                    addToGoogleCalendar(newAppt).then((res:any) => {
+                      console.log('[CALENDAR] addToGoogleCalendar result:', res);
+                      addSystemMessage('✓ Booking added to your Google Calendar');
+                    }).catch((err:any) => {
+                      console.error('[CALENDAR] addToGoogleCalendar error:', err);
+                      addSystemMessage('❌ Calendar: ' + (err?.message || JSON.stringify(err)));
+                    });
                     
                     // IMPORTANT: Update status to stop Dialing UI when we switch back
                     const updatedDetails = { ...details, status: 'confirmed' as const };
@@ -463,6 +475,8 @@ const App: React.FC = () => {
     transitionToReceptionist(sample);
   };
 
+  // Calendar integration is handled in services/calendarClient.ts
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
       {/* Left Panel: Sola Interface */}
@@ -528,6 +542,11 @@ const App: React.FC = () => {
           isCallingReceptionist={sessionMode === SessionMode.RECEPTIONIST}
           bookingDetails={bookingDetails || undefined}
           volumeLevel={volumeLevel}
+          onAddToCalendar={() => {
+            if (appointment) {
+              addToGoogleCalendar(appointment);
+            }
+          }}
         />
       </div>
     </div>

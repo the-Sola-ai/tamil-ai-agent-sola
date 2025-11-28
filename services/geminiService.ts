@@ -85,7 +85,7 @@ YOUR TASK:
 
 CRITICAL:
 - You are making the phone call. YOU SPEAK FIRST.
-- Speak in a natural, slightly formal Tamil/English mix appropriate for a phone call.
+- Speak in a natural, slightly formal Tanglish/tamil mix like a normal tamil person appropriate for a phone call.
 - Do not greet the user as "User". Treat them as the "Sir/Madam" at the reception desk.
 `;
 
