@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { base64ToFloat32Array, float32ArrayToBase64, INPUT_SAMPLE_RATE, PCM_SAMPLE_RATE } from './utils/audioUtils';
@@ -459,6 +458,40 @@ const App: React.FC = () => {
     }
   };
 
+  // --- New: End-call handler exposed to DynamicPanel ---
+  const handleEndCall = async () => {
+    console.log('handleEndCall: user requested to end call');
+    // disconnect the live session and reset UI
+    await disconnectLiveAPI(true);
+    setSessionMode(SessionMode.USER);
+
+    // If we had an in-progress booking (negotiating) and no confirmed appointment, cancel it
+    const current = bookingDetailsRef.current;
+    if (current && current.status === 'negotiating') {
+      const updated = { ...current, status: 'failed' as const };
+      setBookingDetails(updated);
+      bookingDetailsRef.current = updated;
+      setAppointment(undefined);
+      setLastCallStatus('Cancelled: call ended before confirmation.');
+      addSystemMessage('Booking cancelled because call was ended before confirmation.');
+    }
+
+    dialingTriggeredRef.current = false;
+  };
+
+  // Allow UI to explicitly cancel booking without touching call (hook for a "Cancel" control if needed)
+  const handleCancelBooking = () => {
+    const current = bookingDetailsRef.current;
+    if (current && current.status === 'negotiating') {
+      const updated = { ...current, status: 'failed' as const };
+      setBookingDetails(updated);
+      bookingDetailsRef.current = updated;
+      setAppointment(undefined);
+      setLastCallStatus('Cancelled by user.');
+      addSystemMessage('Booking cancelled by user.');
+    }
+  };
+
   // DEBUG: helper to simulate an external booking information object and trigger receptionist
   const simulateBookingAndDial = () => {
     const sample: BookingDetails = {
@@ -476,42 +509,46 @@ const App: React.FC = () => {
   };
 
   // Calendar integration is handled in services/calendarClient.ts
+  // Only enable calendar action when appointment exists AND bookingDetails status is confirmed
+  const calendarAction = (appointment && bookingDetails?.status === 'confirmed') ? (() => addToGoogleCalendar(appointment)) : undefined;
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
+    <div className="flex h-screen w-screen overflow-hidden bg-gradient-to-b from-[#0b1220] to-[#071021] text-gray-100">
       {/* Left Panel: Sola Interface */}
-      <div className={`w-1/3 border-r border-gray-200 flex flex-col shadow-xl z-20 transition-colors duration-500 ${sessionMode === SessionMode.RECEPTIONIST ? 'bg-gray-900 text-white' : 'bg-white'}`}>
-        <div className={`p-6 border-b ${sessionMode === SessionMode.RECEPTIONIST ? 'border-gray-700' : 'border-gray-100'}`}>
-          <h1 className="text-2xl font-bold flex items-center">
-            <span className={`w-3 h-3 rounded-full mr-3 animate-pulse ${sessionMode === SessionMode.RECEPTIONIST ? 'bg-green-500' : 'bg-red-500'}`}></span>
-            {sessionMode === SessionMode.USER ? "Sola Assistant" : "Live Call Active"}
-          </h1>
-          <div className="mt-3">
-            <button onClick={simulateBookingAndDial} className="text-xs px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700">Debug: Dial</button>
+      <div className={`w-1/3 flex flex-col shadow-2xl z-20 transition-colors duration-500 bg-[rgba(255,255,255,0.02)] border-r border-transparent backdrop-blur-sm`}>
+        <div className="p-6 border-b border-gray-800">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl font-extrabold flex items-center gap-3">
+                <span className={`w-3 h-3 rounded-full ${sessionMode === SessionMode.RECEPTIONIST ? 'bg-green-400' : 'bg-red-400'} shadow-sm`} />
+                {sessionMode === SessionMode.USER ? "Sola Assistant" : "Live Call"}
+              </h1>
+              <p className="text-sm text-gray-400 mt-1">{sessionMode === SessionMode.USER ? "Chennai regional voice booking" : `Calling: ${bookingDetails?.placeName}`}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={simulateBookingAndDial} className="text-xs px-3 py-1 bg-violet-600 hover:bg-violet-700 text-white rounded-lg shadow">Debug: Dial</button>
+            </div>
           </div>
-          <p className={`text-sm mt-1 ${sessionMode === SessionMode.RECEPTIONIST ? 'text-gray-400' : 'text-gray-500'}`}>
-            {sessionMode === SessionMode.USER ? "Chennai Regional Voice Booking" : `Calling: ${bookingDetails?.placeName}`}
-          </p>
         </div>
         
         {/* Chat / Transcript Area */}
-        <div className={`flex-1 overflow-y-auto p-4 space-y-4 ${sessionMode === SessionMode.RECEPTIONIST ? 'bg-gray-800' : 'bg-gray-50'}`}>
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
            {messages.length === 0 && sessionMode === SessionMode.USER && (
-             <div className="text-center text-gray-400 mt-10">
+             <div className="text-center text-gray-500 mt-10">
                <p>Say "Find a saloon nearby" to start.</p>
              </div>
            )}
            {sessionMode === SessionMode.RECEPTIONIST && (
-             <div className="p-4 bg-gray-700 rounded-lg text-center animate-pulse">
-                <p className="text-green-400 font-bold mb-2">📞 Connected</p>
-                <p className="text-sm text-gray-300">Sola is speaking to you (The Receptionist).</p>
+             <div className="p-4 rounded-xl bg-[rgba(255,255,255,0.02)] border border-gray-800 text-center">
+                <p className="text-green-300 font-bold mb-1">📞 Connected</p>
+                <p className="text-sm text-gray-400">Sola is speaking to the receptionist.</p>
              </div>
            )}
            {messages.map(msg => (
              <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                <div className={`max-w-[85%] p-3 rounded-lg text-sm ${
-                 msg.role === 'system' ? 'bg-yellow-100 text-yellow-800 italic w-full text-center' :
-                 msg.role === 'user' ? 'bg-blue-500 text-white' : 'bg-white border border-gray-200 text-gray-800'
+                 msg.role === 'system' ? 'bg-amber-900/40 text-amber-300 italic w-full text-center' :
+                 msg.role === 'user' ? 'bg-gradient-to-r from-violet-700 to-violet-600 text-white' : 'bg-[rgba(255,255,255,0.03)] border border-gray-800 text-gray-100'
                }`}>
                  {msg.text}
                </div>
@@ -520,7 +557,7 @@ const App: React.FC = () => {
         </div>
 
         {/* Voice Controls */}
-        <div className={`p-6 border-t ${sessionMode === SessionMode.RECEPTIONIST ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-100'}`}>
+        <div className="p-6 border-t border-gray-800 bg-gradient-to-t from-transparent to-[rgba(255,255,255,0.02)]">
            <VoiceControls 
              isActive={isActive} 
              onToggle={handleToggle} 
@@ -530,7 +567,7 @@ const App: React.FC = () => {
       </div>
 
       {/* Right Panel: Dynamic Content */}
-      <div className="flex-1 bg-gray-100 relative">
+      <div className="flex-1 relative">
         <DynamicPanel 
           mode={viewMode}
           places={places}
@@ -542,11 +579,11 @@ const App: React.FC = () => {
           isCallingReceptionist={sessionMode === SessionMode.RECEPTIONIST}
           bookingDetails={bookingDetails || undefined}
           volumeLevel={volumeLevel}
-          onAddToCalendar={() => {
-            if (appointment) {
-              addToGoogleCalendar(appointment);
-            }
-          }}
+          // Pass calendar action only when booked & confirmed
+          onAddToCalendar={calendarAction}
+          // New handlers (DynamicPanel can call these when user presses end/cancel)
+          onEndCall={handleEndCall}
+          onCancelBooking={handleCancelBooking}
         />
       </div>
     </div>

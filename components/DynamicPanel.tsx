@@ -1,5 +1,4 @@
-
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ViewMode, Place, Appointment, BookingDetails } from '../types';
 import MapComponent from './MapComponent';
 import CalendarView from './CalendarView';
@@ -12,197 +11,450 @@ interface DynamicPanelProps {
   appointment?: Appointment;
   isCallingReceptionist: boolean;
   bookingDetails?: BookingDetails;
-  volumeLevel: number; // For visualizer
-  onAddToCalendar?: () => void; // Callback to manually trigger calendar sync
+  volumeLevel: number;
+  onAddToCalendar?: () => void;
+  // NEW: callbacks to control call lifecycle / cancel booking from UI
+  onEndCall?: () => void;
+  onCancelBooking?: () => void;
 }
 
-const DynamicPanel: React.FC<DynamicPanelProps> = ({ 
-  mode, 
-  places, 
-  selectedPlaceId, 
+const DynamicPanel: React.FC<DynamicPanelProps> = ({
+  mode,
+  places,
+  selectedPlaceId,
   onSelectPlace,
   appointment,
   isCallingReceptionist,
   bookingDetails,
   volumeLevel,
-  onAddToCalendar
+  onAddToCalendar,
+  onEndCall,
+  onCancelBooking
 }) => {
-  
-  // Logic to determine if we are in the "Dialing" transition state
-  // We are dialing if the status is negotiating but the session hasn't switched to Receptionist yet
   const isDialing = bookingDetails?.status === 'negotiating' && !isCallingReceptionist;
 
-  // 1. DIALING SCREEN
+  // Track whether parent has provided results *after mount*.
+  const initialPlacesRef = useRef<Place[] | null>(null);
+  const [showPlaces, setShowPlaces] = useState(false);
+
+  useEffect(() => {
+    if (initialPlacesRef.current === null) {
+      initialPlacesRef.current = places;
+      return;
+    }
+    if (initialPlacesRef.current !== places) {
+      setShowPlaces(true);
+    }
+  }, [places]);
+
+  // Call timer for live call UI
+  const [callSeconds, setCallSeconds] = useState(0);
+  useEffect(() => {
+    let t: number | undefined;
+    if (isCallingReceptionist) {
+      t = window.setInterval(() => setCallSeconds(s => s + 1), 1000);
+    } else {
+      setCallSeconds(0);
+    }
+    return () => { if (t) clearInterval(t); };
+  }, [isCallingReceptionist]);
+
+  const formatTime = (s: number) => {
+    const mm = Math.floor(s / 60).toString().padStart(2, '0');
+    const ss = (s % 60).toString().padStart(2, '0');
+    return `${mm}:${ss}`;
+  };
+
+  // Whether to show the phone overlay (either dialing or in-call)
+  const phoneVisible = isDialing || isCallingReceptionist;
+
+  // Small reusable button for controls
+  const ActionButton: React.FC<{
+    label: string;
+    onClick?: () => void;
+    active?: boolean;
+    disabled?: boolean;
+    ariaLabel?: string;
+    variant?: 'circle' | 'square';
+    children?: React.ReactNode;
+  }> = ({ label, onClick, active, disabled, ariaLabel, variant = 'square', children }) => {
+    const base =
+      "flex flex-col items-center gap-2 text-xs select-none";
+    const btnCommon =
+      "inline-flex items-center justify-center transition-transform transform-gpu focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500";
+    const squareClasses =
+      "w-14 h-14 rounded-xl bg-[#07121a] border border-gray-800 flex items-center justify-center shadow-sm hover:scale-105";
+    const circleClasses =
+      "w-14 h-14 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center shadow-lg";
+
+    return (
+      <div className={base} aria-hidden={disabled}>
+        <button
+          onClick={onClick}
+          aria-label={ariaLabel || label}
+          disabled={disabled}
+          className={`${btnCommon} ${variant === 'square' ? squareClasses : circleClasses} ${disabled ? 'opacity-50 cursor-not-allowed scale-100' : ''}`}
+          title={label}
+          type="button"
+        >
+          {children}
+        </button>
+        <div className="text-[11px] text-gray-300">{label}</div>
+      </div>
+    );
+  };
+
+  // ---------- PHONE UI (shared container) ----------
+  const PhoneShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+    return (
+      <>
+        {/* Dimmed backdrop */}
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-30"
+          style={{ pointerEvents: 'auto' }}
+        />
+        {/* Centered phone shell */}
+        <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
+          <div
+            className="
+              relative
+              w-full max-w-[420px]
+              h-[90vh] md:h-[720px]
+              bg-[#071520]
+              rounded-3xl
+              shadow-2xl
+              border border-gray-800
+              overflow-hidden
+              flex flex-col
+            "
+            role="dialog"
+            aria-modal="true"
+          >
+            {/* content area is scrollable to avoid clipping on short screens */}
+            <div className="flex-1 overflow-auto">
+              {children}
+            </div>
+          </div>
+        </div>
+      </>
+    );
+  };
+
+  // ---------------- Phone-like Dialing Screen ----------------
   if (isDialing) {
     const selectedPlace = places.find(p => p.id === bookingDetails?.placeId);
+    const displayName = selectedPlace?.name || bookingDetails?.placeName || 'Unknown';
+    const displayNumber = selectedPlace?.phoneNumber || '•••• ••• ••••';
+
     return (
-      <div className="h-full w-full bg-black text-white flex flex-col items-center justify-center relative overflow-hidden">
-        {/* Background Animation */}
-        <div className="absolute inset-0 bg-gray-900 z-0">
-             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-green-900 rounded-full blur-3xl opacity-20 animate-pulse"></div>
+      <>
+        {/* keep the map visible under the overlay but dim and not interactive */}
+        <div className="h-full w-full relative pointer-events-none select-none">
+          <MapComponent places={places} selectedPlaceId={selectedPlaceId} onSelectPlace={onSelectPlace} />
         </div>
 
-        <div className="z-10 flex flex-col items-center">
-            {/* Avatar Pulse */}
-            <div className="relative mb-8">
-                <span className="absolute inline-flex h-32 w-32 rounded-full bg-green-500 opacity-20 animate-ping"></span>
-                <span className="absolute inline-flex h-32 w-32 rounded-full bg-green-500 opacity-20 animate-ping delay-150"></span>
-                <div className="relative w-32 h-32 bg-gray-800 rounded-full flex items-center justify-center border-4 border-gray-700 shadow-2xl">
-                     <span className="text-5xl font-bold text-gray-300">
-                        {selectedPlace?.name.charAt(0) || "C"}
-                     </span>
-                </div>
+        <PhoneShell>
+          <div className="px-6 pt-6 pb-4">
+            {/* top notch / status */}
+            <div className="flex items-center justify-between text-xs text-gray-400">
+              <div className="flex items-center gap-3">
+                <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+                <span className="font-medium">Calling</span>
+              </div>
+              <div className="text-xs text-gray-400">—</div>
             </div>
 
-            <h2 className="text-3xl font-bold mb-2">{selectedPlace?.name || bookingDetails?.placeName}</h2>
-            <p className="text-gray-400 text-lg mb-8 tracking-widest">DIALING...</p>
+            {/* caller avatar and details */}
+            <div className="flex flex-col items-center text-center mt-6">
+              <div className="w-36 h-36 rounded-full bg-gradient-to-br from-[#0f1724] to-[#071021] border-4 border-[#071821] flex items-center justify-center shadow-xl">
+                <span className="text-5xl font-bold text-gray-300">{displayName.charAt(0)}</span>
+              </div>
 
-            <div className="flex space-x-8">
-                <div className="flex flex-col items-center">
-                    <div className="w-16 h-16 rounded-full bg-gray-800 flex items-center justify-center mb-2">
-                         <svg className="w-8 h-8 text-gray-400" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.66 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
-                    </div>
-                    <span className="text-xs text-gray-500">Audio</span>
+              <h2 className="mt-6 text-2xl font-semibold text-white">{displayName}</h2>
+              <p className="text-sm text-gray-400 mt-1">{displayNumber}</p>
+
+              <div className="mt-4">
+                <div className="inline-flex items-center gap-2 text-xs text-gray-400 bg-[rgba(255,255,255,0.02)] px-3 py-1 rounded-full border border-gray-800">
+                  <svg className="w-4 h-4 text-green-400" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 106.32 17.76L21 22l-2.24-2.24A10 10 0 0012 2z"/></svg>
+                  Ringing...
                 </div>
-                 <div className="flex flex-col items-center">
-                    <div className="w-16 h-16 rounded-full bg-red-600 flex items-center justify-center mb-2 shadow-lg shadow-red-900/50">
-                         <svg className="w-8 h-8 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08c-.18-.17-.29-.42-.29-.7 0-.28.11-.53.29-.71C3.34 8.36 7.46 6 12 6s8.66 2.36 11.71 5.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28-.79-.74-1.69-1.36-2.67-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>
-                    </div>
-                    <span className="text-xs text-gray-500">End</span>
-                </div>
-                 <div className="flex flex-col items-center">
-                    <div className="w-16 h-16 rounded-full bg-gray-800 flex items-center justify-center mb-2">
-                         <svg className="w-8 h-8 text-gray-400" fill="currentColor" viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
-                    </div>
-                    <span className="text-xs text-gray-500">Speaker</span>
-                </div>
+              </div>
+
+              <div className="mt-4 text-xs text-gray-400">
+                Service: <span className="text-gray-200 font-medium">{bookingDetails?.service}</span>
+              </div>
+
+              {/* NOTE: removed the large decorative initiating circle per request */}
             </div>
-        </div>
-      </div>
+          </div>
+
+          {/* footer / controls */}
+          <div className="px-6 pb-6 md:absolute md:bottom-6 md:left-6 md:right-6 md:flex md:items-center md:justify-between md:gap-4">
+            <div className="flex gap-6 justify-center md:justify-start w-full">
+              {/* Mute */}
+              <ActionButton
+                ariaLabel="Mute"
+                label="Mute"
+                onClick={() => { /* keep behaviour same, add handler later */ }}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 9v6a3 3 0 0 0 6 0v-1" />
+                  <path d="M5 10v1a7 7 0 0 0 14 0v-1" />
+                  <line x1="1" y1="1" x2="23" y2="23" />
+                </svg>
+              </ActionButton>
+
+              {/* Keypad */}
+              <ActionButton
+                ariaLabel="Keypad"
+                label="Keypad"
+                onClick={() => { /* keep behaviour same, add handler later */ }}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                  <path d="M8 8h.01M16 8h.01M8 12h.01M16 12h.01M8 16h.01M16 16h.01" />
+                </svg>
+              </ActionButton>
+
+              {/* Speaker */}
+              <ActionButton
+                ariaLabel="Speaker"
+                label="Speaker"
+                onClick={() => { /* keep behaviour same, add handler later */ }}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M11 5l6 4v6l-6 4v-14z" />
+                  <path d="M5 9v6" />
+                </svg>
+              </ActionButton>
+            </div>
+
+            <div className="flex flex-col items-center mt-4 md:mt-0">
+              {/* End call button -> calls onEndCall when provided */}
+              <ActionButton
+                ariaLabel="End call"
+                label="End"
+                onClick={() => onEndCall?.()}
+                variant="circle"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7 text-white" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12a9 9 0 1 1-18 0" />
+                  <path d="M16 8l-8 8" />
+                </svg>
+              </ActionButton>
+            </div>
+          </div>
+
+          {/* small status row (keeps inside scroll area on small screens) */}
+          <div className="px-6 pb-6">
+            <div className="w-full rounded-md bg-[rgba(255,255,255,0.02)] border border-gray-800 px-4 py-3 flex items-center justify-between text-sm text-gray-300">
+              <div className="flex items-center gap-3">
+                <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+                <div>Connecting to receptionist</div>
+              </div>
+              <div className="font-mono text-xs">{bookingDetails?.date} • {bookingDetails?.time}</div>
+            </div>
+          </div>
+        </PhoneShell>
+      </>
     );
   }
 
-  // 2. ACTIVE CALL SCREEN (Receptionist Connected)
+  // ---------------- Phone-like In-Call Screen ----------------
   if (isCallingReceptionist) {
     const selectedPlace = places.find(p => p.id === bookingDetails?.placeId);
-    const phoneNumber = selectedPlace?.phoneNumber || "Connected";
+    const displayName = selectedPlace?.name || bookingDetails?.placeName || 'Unknown';
+    const phoneNumber = selectedPlace?.phoneNumber || '—';
+
+    // only enable Save (calendar) when booking confirmed
+    const saveEnabled = bookingDetails?.status === 'confirmed' && !!onAddToCalendar;
 
     return (
-      <div className="h-full w-full bg-black text-white flex flex-col items-center justify-between relative overflow-hidden py-12">
-        {/* Background Blur */}
-        <div className="absolute inset-0 bg-gradient-to-b from-gray-800 to-black opacity-90 z-0"></div>
-        <div className="absolute inset-0 opacity-10 bg-[url('https://www.transparenttextures.com/patterns/dark-matter.png')] z-0"></div>
-
-        {/* Top Info */}
-        <div className="z-10 flex flex-col items-center mt-8 w-full px-8 animate-fade-in-down">
-           <div className="w-24 h-24 bg-gradient-to-br from-gray-700 to-gray-800 rounded-full flex items-center justify-center mb-6 shadow-2xl border-2 border-gray-600">
-             <span className="text-4xl font-bold text-gray-300">
-                {bookingDetails?.placeName?.charAt(0) || "C"}
-             </span>
-           </div>
-           
-           <h2 className="text-3xl font-bold mb-2 text-center">{bookingDetails?.placeName}</h2>
-           <p className="text-gray-400 text-lg mb-2">{phoneNumber}</p>
-           <p className="text-green-400 text-sm font-mono animate-pulse bg-green-900/30 px-3 py-1 rounded-full border border-green-800/50">
-             00:14 • HD Voice Active
-           </p>
+      <>
+        {/* dimmed background map not interactive */}
+        <div className="h-full w-full relative pointer-events-none select-none">
+          <MapComponent places={places} selectedPlaceId={selectedPlaceId} onSelectPlace={onSelectPlace} />
         </div>
 
-        {/* Dynamic Visualizer (The Wave) */}
-        <div className="z-10 flex items-center justify-center h-32 w-full px-12">
-             <div className="flex space-x-1.5 items-center h-full">
-                {Array.from({ length: 24 }).map((_, i) => {
-                    // Create a wave effect based on volume and index
-                    const baseHeight = 6;
-                    const wave = Math.sin(i * 0.4 + Date.now() / 150);
-                    const dynamicHeight = Math.max(baseHeight, volumeLevel * 300 * Math.abs(wave));
-                    
-                    return (
-                        <div 
-                           key={i} 
-                           className="w-1.5 bg-gradient-to-t from-green-400 to-green-600 rounded-full transition-all duration-75 shadow-[0_0_10px_rgba(74,222,128,0.5)]"
-                           style={{ height: `${dynamicHeight}px` }}
-                        />
-                    )
-                })}
-             </div>
-        </div>
+        <PhoneShell>
+          <div className="px-6 pt-6 pb-4">
+            {/* top status */}
+            <div className="flex items-center justify-between text-xs text-gray-400">
+              <div className="flex items-center gap-2">
+                <svg className="w-4 h-4 text-green-400" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 106.32 17.76L21 22l-2.24-2.24A10 10 0 0012 2z"/></svg>
+                <span className="font-medium">On Call</span>
+              </div>
+              <div className="text-xs">{formatTime(callSeconds)}</div>
+            </div>
 
-        {/* Helper Card for User Roleplay */}
-        <div className="z-10 bg-gray-800/60 backdrop-blur-md p-6 rounded-2xl border border-gray-700/50 max-w-sm w-full mx-4 text-center shadow-xl">
-             <p className="text-xs text-yellow-500 font-bold uppercase tracking-wider mb-3">Incoming Call Simulation</p>
-             <p className="text-sm text-gray-300 leading-relaxed">
-               You are the receptionist at <span className="font-bold text-white">{bookingDetails?.placeName}</span>.
-               <br/>
-               Sola is asking to book: <span className="text-green-300 font-medium block mt-1">{bookingDetails?.service} • {bookingDetails?.date} • {bookingDetails?.time}</span>
-             </p>
-        </div>
+            {/* caller block */}
+            <div className="flex flex-col items-center text-center mt-6">
+              <div className="w-36 h-36 rounded-full bg-gradient-to-br from-[#0f1724] to-[#071021] border-4 border-[#071821] flex items-center justify-center shadow-xl">
+                <span className="text-5xl font-bold text-gray-300">{displayName.charAt(0)}</span>
+              </div>
 
-        {/* Phone Controls (Visual Only) */}
-        <div className="z-10 grid grid-cols-3 gap-8 mb-8 w-full max-w-xs px-4">
-             {['Mute', 'Keypad', 'Speaker', 'Add Call', 'Video', 'Contacts'].map((label, idx) => (
-                <div key={idx} className="flex flex-col items-center justify-center opacity-50 hover:opacity-80 transition-opacity cursor-pointer">
-                    <div className="w-14 h-14 rounded-full border border-gray-600 bg-gray-800/50 flex items-center justify-center mb-1">
-                        <div className="w-6 h-6 bg-gray-500 rounded-sm"></div>
-                    </div>
-                    <span className="text-[10px] text-gray-400 font-medium">{label}</span>
+              <h2 className="mt-6 text-2xl font-semibold text-white">{displayName}</h2>
+              <p className="text-sm text-gray-400 mt-1">{phoneNumber}</p>
+
+              <div className="mt-3 flex items-center gap-3">
+                <div className="text-xs text-gray-400 px-2 py-1 rounded bg-[rgba(255,255,255,0.02)] border border-gray-800">{bookingDetails?.service}</div>
+                <div className="text-xs text-gray-400 px-2 py-1 rounded bg-[rgba(255,255,255,0.02)] border border-gray-800">HD Voice</div>
+              </div>
+            </div>
+          </div>
+
+          {/* waveform / visual */}
+          <div className="px-6">
+            <div className="w-full h-20 rounded-lg bg-[rgba(0,0,0,0.45)] border border-gray-800 flex items-end px-2 overflow-hidden">
+              {Array.from({ length: 48 }).map((_, i) => {
+                const base = 6;
+                const wave = Math.abs(Math.sin(i * 0.2 + (Date.now() / 400)));
+                const h = Math.max(base, Math.min(70, base + wave * (12 + volumeLevel * 90)));
+                return <div key={i} className="w-1.5 mx-0.5 bg-gradient-to-t from-green-400 to-green-300 rounded-t" style={{ height: `${h}px` }} />;
+              })}
+            </div>
+          </div>
+
+          {/* call detail card */}
+          <div className="px-6 mt-6">
+            <div className="w-full bg-[rgba(255,255,255,0.02)] border border-gray-800 rounded-lg p-4 text-sm text-gray-300">
+              <div className="flex justify-between items-center">
+                <div>
+                  <div className="text-xs text-gray-400 uppercase">Booking Request</div>
+                  <div className="text-sm font-medium text-white mt-1">{bookingDetails?.service} • {bookingDetails?.date} {bookingDetails?.time}</div>
                 </div>
-             ))}
-        </div>
-        
-        {/* End Call Button (Visual Only - AI ends it) */}
-        <div className="z-10 mb-8">
-             <div className="w-16 h-16 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center shadow-lg shadow-red-900/40 transition-transform hover:scale-105 cursor-pointer">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.516l2.257-1.13a1 1 0 00.502-1.21l-1.498-4.493a1 1 0 00-.949-.684H5z" />
-                </svg>
-             </div>
-        </div>
+                <div className="text-right">
+                  <div className="text-xs text-gray-400">Status</div>
+                  <div className="text-sm font-semibold text-green-300 mt-1">{bookingDetails?.status === 'confirmed' ? 'Confirmed' : 'Negotiating'}</div>
+                </div>
+              </div>
+              <div className="mt-2 text-xs text-gray-400">Notes: Receptionist checking availability and timeslots.</div>
+            </div>
+          </div>
 
-      </div>
+          {/* actions */}
+          <div className="px-6 pb-6 md:absolute md:bottom-6 md:left-6 md:right-6 flex gap-3 items-center justify-between">
+            <div className="flex gap-6">
+              <ActionButton
+                ariaLabel="Mute"
+                label="Mute"
+                onClick={() => { /* mute toggle placeholder */ }}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 9v6a3 3 0 0 0 6 0v-1" />
+                  <path d="M5 10v1a7 7 0 0 0 14 0v-1" />
+                  <line x1="1" y1="1" x2="23" y2="23" />
+                </svg>
+              </ActionButton>
+
+              <ActionButton
+                ariaLabel="Keypad"
+                label="Keypad"
+                onClick={() => { /* keypad placeholder */ }}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                  <path d="M8 8h.01M16 8h.01M8 12h.01M16 12h.01M8 16h.01M16 16h.01" />
+                </svg>
+              </ActionButton>
+
+              <ActionButton
+                ariaLabel="Speaker"
+                label="Speaker"
+                onClick={() => { /* speaker placeholder */ }}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M11 5l6 4v6l-6 4v-14z" />
+                  <path d="M5 9v6" />
+                </svg>
+              </ActionButton>
+            </div>
+
+            <div className="flex items-center gap-3">
+              {/* Save only enabled after confirmation */}
+              <button
+                onClick={() => { if (saveEnabled) onAddToCalendar?.(); }}
+                disabled={!saveEnabled}
+                className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${saveEnabled ? 'bg-[#0ea5a6] text-black' : 'bg-[rgba(255,255,255,0.02)] text-gray-500 cursor-not-allowed'}`}
+              >
+                {saveEnabled ? 'Save' : 'Save'}
+              </button>
+
+              {/* End call -> calls onEndCall */}
+              <ActionButton
+                ariaLabel="End call"
+                label=""
+                onClick={() => {
+                  // if call ended before confirmation, cancel the booking draft
+                  if (bookingDetails && bookingDetails.status !== 'confirmed') {
+                    onCancelBooking?.();
+                  }
+                  onEndCall?.();
+                }}
+                variant="circle"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </ActionButton>
+            </div>
+          </div>
+        </PhoneShell>
+      </>
     );
   }
 
-  // 3. CALENDAR VIEW (Booking Success)
+  // Calendar view — pass bookingDetails down so calendar can validate confirmation status
   if (mode === ViewMode.CALENDAR && appointment) {
-    return <CalendarView appointment={appointment} onAddToCalendar={onAddToCalendar} />;
+    return <CalendarView appointment={appointment} bookingDetails={bookingDetails} onAddToCalendar={onAddToCalendar} />;
   }
 
-  // 4. MAP VIEW (Default)
+  // Default map + optional results
   return (
     <div className="h-full w-full relative">
-       {/* Map Overlay or Component */}
-       <MapComponent 
-         places={places} 
-         selectedPlaceId={selectedPlaceId}
-         onSelectPlace={onSelectPlace}
-       />
-       
-       {/* List overlay for accessibility/easier selection */}
-       {places.length > 0 && mode === ViewMode.MAP && (
-         <div className="absolute bottom-4 left-4 right-4 bg-white rounded-xl shadow-xl p-4 max-h-48 overflow-y-auto z-10">
-            <h3 className="text-sm font-semibold text-gray-500 mb-2 uppercase tracking-wide">Nearby Results</h3>
-            <div className="space-y-2">
-              {places.map(place => (
-                <div 
-                  key={place.id}
-                  onClick={() => onSelectPlace(place.id)}
-                  className={`p-3 rounded-lg cursor-pointer border flex justify-between items-center transition-colors ${selectedPlaceId === place.id ? 'bg-blue-50 border-blue-500' : 'bg-gray-50 border-transparent hover:bg-gray-100'}`}
-                >
-                  <div>
-                    <div className="font-bold text-gray-800">{place.name}</div>
-                    <div className="text-xs text-gray-500">{place.address}</div>
-                    <div className="text-xs text-blue-500 mt-1">{place.phoneNumber}</div>
-                  </div>
-                  <div className="text-right">
-                    <span className="block text-xs font-bold text-amber-500">★ {place.rating}</span>
-                    <span className="text-[10px] text-gray-400">({place.userRatingCount})</span>
-                  </div>
+      {/* normal interactive map when phone overlay not visible */}
+      <div className={`${phoneVisible ? 'pointer-events-none opacity-60' : 'pointer-events-auto'} h-full w-full`}>
+        <MapComponent
+          places={places}
+          selectedPlaceId={selectedPlaceId}
+          onSelectPlace={onSelectPlace}
+        />
+      </div>
+
+      {/* Only show the results list when `places` was updated after mount (i.e. user asked / search returned results) */}
+      {showPlaces && places.length > 0 && mode === ViewMode.MAP && !phoneVisible && (
+        <div className="absolute bottom-4 left-4 right-4 bg-[rgba(0,0,0,0.6)] rounded-xl shadow-xl p-4 max-h-48 overflow-y-auto z-10 border border-gray-800">
+          <h3 className="text-sm font-semibold text-gray-300 mb-2 uppercase tracking-wide">Nearby Results</h3>
+          <div className="space-y-2">
+            {places.map(place => (
+              <div
+                key={place.id}
+                onClick={() => onSelectPlace(place.id)}
+                className={`p-3 rounded-lg cursor-pointer border flex justify-between items-center transition-colors ${selectedPlaceId === place.id ? 'bg-gradient-to-r from-violet-700 to-violet-600 border-transparent text-white' : 'bg-[rgba(255,255,255,0.02)] border border-gray-800 hover:bg-[rgba(255,255,255,0.03)]'}`}
+              >
+                <div>
+                  <div className="font-bold text-white">{place.name}</div>
+                  <div className="text-xs text-gray-400">{place.address}</div>
+                  <div className="text-xs text-violet-300 mt-1">{place.phoneNumber}</div>
                 </div>
-              ))}
-            </div>
-         </div>
-       )}
+                <div className="text-right">
+                  <span className="block text-xs font-bold text-amber-400">★ {place.rating}</span>
+                  <span className="text-[10px] text-gray-400">({place.userRatingCount})</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Hint when user hasn't asked yet */}
+      {!showPlaces && mode === ViewMode.MAP && !phoneVisible && (
+        <div className="absolute bottom-6 left-6 z-10">
+          <div className="px-3 py-2 rounded-md bg-[rgba(0,0,0,0.5)] border border-gray-800 text-sm text-gray-300">
+            Say “Find a salon nearby” to show results.
+          </div>
+        </div>
+      )}
     </div>
   );
 };
